@@ -1015,3 +1015,19 @@ test("a deferred 403 verdict still counts against the borrowed names", () => {
   }
   assert.equal(getObservedToolNames("opencode", "nemotron-3.5-lightning-free"), null);
 });
+
+test("synthesized session id is encoded the way the OpenCode client encodes it", () => {
+  const executor = new OpencodeExecutor("opencode");
+  const session =
+    executor.buildHeaders(null, true, null, "big-pickle", undefined, {
+      model: "big-pickle",
+      messages: [{ role: "user", content: "encoding check" }],
+    })["x-opencode-session"] ?? "";
+  assert.match(session, OPENCODE_SESSION_PATTERN);
+  const ascending = ~BigInt(`0x${session.slice(4, 16)}`) & ((1n << 48n) - 1n);
+  assert.equal(ascending & 0xfffn, 1n, "counter of a first id");
+  const ms = Number(ascending >> 12n);
+  const nowLow = Number((BigInt(Date.now()) * 0x1000n & ((1n << 48n) - 1n)) >> 12n);
+  const age = (nowLow - ms + 2 ** 36) % 2 ** 36;
+  assert.ok(age <= 14 * 24 * 60 * 60 * 1000, "timestamp within two seeded windows");
+});

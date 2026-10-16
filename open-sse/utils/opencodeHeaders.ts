@@ -99,19 +99,33 @@ function base62From(bytes: Buffer, length: number): string {
   return Array.from(bytes.subarray(0, length), (byte) => BASE62[byte % 62]).join("");
 }
 
+/** Seeded ids keep a stable timestamp inside this window, then roll to the next one. */
+const SEEDED_ID_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const ID_TIME_MASK = (1n << 48n) - 1n;
+
 /**
- * Render an id in the canonical OpenCode shape (`<prefix>` + 12 hex + 14 base62).
+ * Render an id the way the OpenCode client builds it (`<prefix>` + 12 hex + 14 base62).
  *
- * The upstream checks the shape and not the value: 12 arbitrary hex digits pass, so
- * there is no need to reproduce the client's own id algorithm (timestamp plus counter).
- * With a seed the result is deterministic, which is what keeps a conversation on one
- * upstream session — and therefore keeps prompt caching warm — across requests.
+ * The 12 hex digits are the low 48 bits of `ms * 0x1000 + counter`, bitwise-inverted for
+ * sessions so they sort newest-first. Since 2026-10-13 the free tier decodes the session id
+ * and refuses arbitrary hex, an ascending session, or an out-of-range counter; the timestamp
+ * itself may be days or months old (measured 2026-10-16: an arbitrary-hex session id is
+ * refused 403 on `/inference/v1` as well, so this is not zen-only). With a seed the result
+ * is deterministic within one window, which is what keeps a conversation on one upstream
+ * session — and therefore keeps prompt caching warm — across requests.
  */
 function canonicalId(prefix: "ses_" | "msg_", seed?: string): string {
   const bytes = seed
     ? createHash("sha256").update(`opencode\u0000${prefix}\u0000${seed}`).digest()
     : randomBytes(32);
-  return `${prefix}${bytes.subarray(0, 6).toString("hex")}${base62From(bytes.subarray(6), 14)}`;
+  const now = Date.now();
+  const ms = seed
+    ? Math.floor(now / SEEDED_ID_WINDOW_MS) * SEEDED_ID_WINDOW_MS -
+      (bytes.readUIntBE(0, 6) % SEEDED_ID_WINDOW_MS)
+    : now;
+  let time = (BigInt(ms) * 0x1000n + 1n) & ID_TIME_MASK;
+  if (prefix === "ses_") time = ~time & ID_TIME_MASK;
+  return `${prefix}${time.toString(16).padStart(12, "0")}${base62From(bytes.subarray(6), 14)}`;
 }
 
 /**
